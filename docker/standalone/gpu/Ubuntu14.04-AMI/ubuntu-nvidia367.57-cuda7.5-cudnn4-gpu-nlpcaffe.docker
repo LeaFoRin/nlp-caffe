@@ -1,0 +1,149 @@
+#MUST BE BUILT on a system having NVidia driver support:
+#
+#   See step_0-configure_gpu.sh for more details and:
+#   https://github.com/NVIDIA/nvidia-docker/wiki/Deploy-on-Amazon-EC2
+#   https://developer.nvidia.com/cuda-downloads
+#
+# NOTE: best documentation of how to put the parts together is in NVidia's
+#       CentOs DockerFiles.  The Ubuntu files don't have containers broken out
+#       by version of cuda and cudnn like the CentOs files do.
+#
+#     https://github.com/NVIDIA/nvidia-docker/blob/master/centos-7/cuda/7.5/devel/cudnn4/Dockerfile
+#     depends on:
+#     https://github.com/NVIDIA/nvidia-docker/blob/master/centos-7/cuda/7.5/devel/Dockerfile
+#     depends on:
+#     https://github.com/NVIDIA/nvidia-docker/blob/master/centos-7/cuda/7.5/runtime/Dockerfile
+#     depends on:
+#     centos:7
+#
+    
+FROM ubuntu:14.04
+
+USER root
+
+# Install git, bc and dependencies
+RUN apt-get -qq update -y
+RUN apt-get update --fix-missing && apt-get install -y \
+  curl \
+  wget \
+  bzip2 \
+  ca-certificates \
+  sudo \
+  git \
+  bc \
+  vim \
+  procps \
+  curl \
+  libglib2.0-0 \
+  libxext6 \
+  libsm6 \
+  libxrender1 \
+  libatlas-base-dev \
+  libatlas-dev \
+  libboost-all-dev \
+  libopencv-dev \
+  libprotobuf-dev \
+  libgoogle-glog-dev \
+  libgflags-dev \
+  protobuf-compiler \
+  libhdf5-dev \
+  libleveldb-dev \
+  liblmdb-dev \
+  libsnappy-dev \
+  htop
+
+# wget is in step_0 script ... no need to download twice and the OS driver and the Docker driver absolutely have to match
+COPY NVIDIA-Linux-x86_64-367.57.run .
+
+LABEL com.nvidia.volumes.needed="nvidia_driver"
+# The --no-kernel-module is the key for the Docker install
+RUN sh "NVIDIA-Linux-x86_64-367.57.run" --ui=none --no-questions --accept-license --no-kernel-module
+
+RUN NVIDIA_GPGKEY_SUM=d1be581509378368edeec8c1eb2958702feedf3bc3d17011adbf24efacce4ab5 && \
+    NVIDIA_GPGKEY_FPR=ae09fe4bbd223a84b2ccfce3f60f4b3d7fa2af80 && \
+    apt-key adv --fetch-keys http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64/7fa2af80.pub && \
+    apt-key adv --export --no-emit-version -a $NVIDIA_GPGKEY_FPR | tail -n +2 > cudasign.pub && \
+    echo "$NVIDIA_GPGKEY_SUM  cudasign.pub" | sha256sum -c --strict - && rm cudasign.pub && \
+    echo "deb http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64 /" > /etc/apt/sources.list.d/cuda.list
+
+#  Goto http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1404/x86_64 in browser
+#  We want a 7.5 version and looks like we have one option:
+#      cuda-7-5_7.5-18_amd64.deb 
+#  Also reference:  https://github.com/NVIDIA/nvidia-docker/blob/master/centos-7/cuda/7.5/runtime/Dockerfile
+
+ENV CUDA_VERSION 7.5
+LABEL com.nvidia.cuda.version="7.5"
+
+RUN curl -fsSL http://developer.download.nvidia.com/compute/cuda/7.5/Prod/local_installers/cuda_7.5.18_linux.run -O
+RUN chmod +x cuda_7.5.18_linux.run
+RUN ./cuda_7.5.18_linux.run --extract=$HOME
+RUN $HOME/cuda-linux64-rel-7.5.18-19867135.run -noprompt --nox11
+RUN stat /usr/local/cuda/lib64
+
+RUN echo "/usr/local/cuda/lib" >> /etc/ld.so.conf.d/cuda.conf && \
+    echo "/usr/local/cuda/lib64" >> /etc/ld.so.conf.d/cuda.conf && \
+    ldconfig
+
+ENV PATH /usr/local/nvidia/bin:/usr/local/cuda/bin:${PATH}
+ENV LD_LIBRARY_PATH /usr/local/nvidia/lib:/usr/local/nvidia/lib64:${LD_LIBRARY_PATH}
+
+ENV LIBRARY_PATH /usr/local/cuda/lib64/stubs:${LIBRARY_PATH}
+
+
+# https://raw.githubusercontent.com/NVIDIA/nvidia-docker/master/ubuntu-14.04/cuda/8.0/devel/cudnn5/Dockerfile
+# FROM cuda:8.0-devel
+
+# The hard part is knowing the path to the cudnn tar file.  
+ 
+###{{{ BEGIN excerpt from https://github.com/NVIDIA/nvidia-docker/blob/master/centos-7/cuda/7.5/devel/cudnn4/Dockerfile
+#
+ENV CUDNN_VERSION 4 
+LABEL com.nvidia.cudnn.version="4" 
+
+RUN CUDNN_DOWNLOAD_SUM=cd091763d5889f0efff1fbda83bade191f530743a212c6b0ecc2a64d64d94405 && \ 
+    curl -fsSL http://developer.download.nvidia.com/compute/redist/cudnn/v4/cudnn-7.0-linux-x64-v4.0-prod.tgz -O && \ 
+    echo "$CUDNN_DOWNLOAD_SUM  cudnn-7.0-linux-x64-v4.0-prod.tgz" | sha256sum -c --strict - && \ 
+    tar -xzf cudnn-7.0-linux-x64-v4.0-prod.tgz -C /usr/local && \ 
+    rm cudnn-7.0-linux-x64-v4.0-prod.tgz && \ 
+    ldconfig 
+#
+###}}} END excerpt from https://github.com/NVIDIA/nvidia-docker/blob/master/centos-7/cuda/7.5/devel/cudnn4/Dockerfile
+
+# This is needed to suppress "libdc1394 error: Failed to initialize libdc1394" scary warning on AMI
+# See https://groups.google.com/forum/#!topic/digits-users/uvQpHooD6WY
+RUN ln /dev/null /dev/raw1394
+
+#
+#  End of NVidia Stuff 
+
+ENV TERM xterm
+
+RUN echo 'export PATH=/opt/conda/bin:$PATH' > /etc/profile.d/conda.sh && \
+  wget --quiet --no-check-certificate https://repo.continuum.io/archive/Anaconda2-2.4.1-Linux-x86_64.sh && \
+  /bin/bash Anaconda2-2.4.1-Linux-x86_64.sh -b -p /opt/conda && \
+  rm Anaconda2-2.4.1-Linux-x86_64.sh
+
+ENV PATH /opt/conda/bin:$PATH
+ENV PYTHONPATH /home/caffe-user/caffe/python:$PYTHONPATH
+
+RUN conda install -c https://conda.anaconda.org/memex elasticsearch-py && \
+  conda install -c https://conda.anaconda.org/anaconda protobuf
+  
+RUN pip install lmdb
+
+RUN useradd -ms /bin/bash caffe-user && echo "caffe-user:caffe-user" | chpasswd && adduser caffe-user sudo
+RUN chown -R caffe-user:caffe-user /usr/local
+
+# Clone Caffe repo and move into it
+RUN cd /home/caffe-user && git clone https://github.com/Russell91/nlpcaffe.git 
+
+# Clobber Makefile.config with GPU settings
+COPY Makefile.config /home/caffe-user/nlpcaffe
+# -j8 flag must be removed from make when running on Amazon GPU ... race condition occurs.
+RUN cd /home/caffe-user/nlpcaffe && make && make pycaffe && make distribute
+
+# There are some serious version sensitivities:  
+#    If these last 2 lines are above the "make" command
+#    then the build will fail
+RUN echo "/opt/conda/lib" >> /etc/ld.so.conf.d/protobuf.conf
+RUN ldconfig
